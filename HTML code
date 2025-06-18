@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEDMYTH AI - Your Virtual Health Assistant</title>
+    <!-- [Keep all your existing CSS and head content] -->
+</head>
+<body>
+    <!-- [Keep all your existing HTML structure] -->
+
+    <script>
+        // [Previous JavaScript code remains the same until the generateMedicalResponse function]
+
+        async function generateMedicalResponse(message, isFirstMessage) {
+            // Special greeting response for first message with hi/hello
+            if (isFirstMessage && (message.toLowerCase().includes('hi') || 
+                                  message.toLowerCase().includes('hello') || 
+                                  message.toLowerCase().includes('hey'))) {
+                return "Hello! I'm MEDMYTH AI, your virtual health assistant. It's great to connect with you!<br><br>" +
+                       "I'm here to help you with:<br>" +
+                       "• Understanding symptoms and conditions<br>" +
+                       "• Clarifying common health myths<br>" +
+                       "• Providing general health information<br>" +
+                       "• Offering first-aid guidance<br><br>" +
+                       "How can I assist you with your health questions today?";
+            }
+            
+            // [Rest of your medicalDatabase object and response logic]
+        }
+
+        // [Rest of your existing JavaScript code]
+    </script>
+</body>
+</html>
