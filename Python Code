@@ -1,0 +1,245 @@
+from flask import Flask, request, jsonify, render_template
+import google.generativeai as genai
+import PyPDF2
+import os
+from werkzeug.utils import secure_filename
+
+# Set your Gemini API key
+GEMINI_API_KEY = "AIzaSyANSodfWZOTOJy3_kTWTKxCpGIs4laH134"  # Replace with your actual API key
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-pro')
+
+app = Flask(__name__)
+
+# Configure upload folder
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+def extract_text_from_pdf(pdf_path):
+    try:
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            text = ''
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:  # Only add if text was extracted
+                    text += page_text + "\n"  # Add newline between pages
+            return text.strip()
+    except Exception as e:
+        print(f"Error extracting text from {pdf_path}: {str(e)}")
+        return ""
+
+def extract_disease_names(text):
+    """Extract disease names from the structured PDF content"""
+    diseases = []
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if line.strip().isdigit() and i+1 < len(lines) and '.' in lines[i+1]:
+            # This detects numbered disease sections (like "1. Measles")
+            disease_name = lines[i+1].split('.')[-1].strip()
+            diseases.append(disease_name)
+    return diseases
+
+def find_relevant_disease_section(disease_name, disease_text):
+    """Find the specific section for a disease in the text"""
+    sections = disease_text.split('\n\n')
+    for section in sections:
+        if disease_name.lower() in section.lower():
+            return section
+    return None
+
+# Load PDFs with verification
+def load_pdfs():
+    global myths_text, disease_text, disease_names
+    
+    # Define absolute paths to your PDF files
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    myths_pdf_path = os.path.join(base_dir, "Mythsfinal.pdf")
+    disease_pdf_path = os.path.join(base_dir, "FinalDataset.pdf")
+    
+    print(f"\nLooking for PDFs in: {base_dir}")
+    print(f"Files in directory: {os.listdir(base_dir)}\n")
+    
+    # Load Myths PDF
+    if os.path.exists(myths_pdf_path):
+        print("Found Myths PDF, extracting text...")
+        myths_text = extract_text_from_pdf(myths_pdf_path)
+        print(f"Myths text extracted (length: {len(myths_text)} characters)")
+    else:
+        print(f"Error: {myths_pdf_path} not found")
+    
+    # Load Disease PDF
+    if os.path.exists(disease_pdf_path):
+        print("Found Disease PDF, extracting text...")
+        disease_text = extract_text_from_pdf(disease_pdf_path)
+        print(f"Disease text extracted (length: {len(disease_text)} characters)")
+        # Extract disease names from the dataset
+        disease_names = extract_disease_names(disease_text)
+        print(f"Found diseases: {', '.join(disease_names)}")
+    else:
+        print(f"Error: {disease_pdf_path} not found")
+
+# Initialize PDF content
+myths_text = ""
+disease_text = ""
+disease_names = []
+load_pdfs()  # Load PDFs when server starts
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/check_pdfs')
+def check_pdfs():
+    return jsonify({
+        "myths_text_exists": bool(myths_text),
+        "disease_text_exists": bool(disease_text),
+        "disease_names": disease_names,
+        "current_directory": os.listdir(os.path.dirname(os.path.abspath(__file__)))
+    })
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    global myths_text, disease_text, disease_names
+    user_input = request.json.get('message')
+    if not user_input:
+        return jsonify({"response": "Please enter a valid question."})
+
+    try:
+        # Verify we have content to work with
+        if not myths_text and not disease_text:
+            return jsonify({"response": "Medical knowledge base not loaded. Please check PDF files."})
+        
+        # Check if query matches any known disease
+        matched_disease = None
+        for disease in disease_names:
+            if disease.lower() in user_input.lower():
+                matched_disease = disease
+                break
+        
+        if matched_disease:
+            # Get specific disease section
+            disease_section = find_relevant_disease_section(matched_disease, disease_text)
+            if disease_section:
+                prompt = f"""
+                You are a medical assistant providing information about {matched_disease}.
+                Here is the relevant information:
+                {disease_section}
+                
+                The user asked: {user_input}
+                
+                Provide a detailed response focusing on:
+                - Symptoms
+                - Transmission
+                - Prevention
+                - Treatment
+                - Common misconceptions
+                - Include key facts from the provided information
+                - Use simple, clear language
+                - Format the response with clear sections
+                """
+                response = model.generate_content(prompt)
+                return jsonify({"response": response.text.replace('*', '').strip()})
+        
+        # If no specific disease matched or section found, use general approach
+        prompt = f"""
+        ROLE: You are MedMyth AI, a virtual health assistant with expertise in:
+        - Debunking medical myths and misconceptions
+        - Providing accurate disease information
+        - Offering evidence-based health advice
+
+        KNOWLEDGE SOURCES:
+        {('MEDICAL MYTHS DATABASE:\n' + myths_text[:5000] + '...') if myths_text else 'No myths database loaded'}
+        {('DISEASE INFORMATION DATASET:\n' + disease_text[:5000] + '...') if disease_text else 'No disease dataset loaded'}
+
+        USER QUESTION: {user_input}
+
+        RESPONSE GUIDELINES:
+        1. First determine if this is a medical question
+        2. For myth-related questions:
+           - Clearly state if it's a myth
+           - Provide factual correction
+           - Cite evidence from sources
+        3. For disease-related questions:
+           - List key symptoms
+           - Explain transmission
+           - Provide prevention methods
+           - Mention treatment options
+        4. For general health questions:
+           - Provide balanced, evidence-based advice
+        5. If unrelated to health:
+           - Politely explain you specialize in medical topics
+        6. Always:
+           - Use clear, simple language
+           - Be accurate and professional
+        """
+        
+        # Generate response
+        response = model.generate_content(prompt)
+        cleaned_response = response.text.replace('*', '').strip()
+        
+        return jsonify({"response": cleaned_response})
+    
+    except Exception as e:
+        return jsonify({"response": f"Error processing your request: {str(e)}"})
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    global myths_text, disease_text, disease_names
+    
+    if 'file' not in request.files:
+        return jsonify({"response": "No file part"})
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"response": "No selected file"})
+    
+    if file and file.filename.endswith('.pdf'):
+        try:
+            # Save the uploaded file
+            filename = secure_filename(file.filename)
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(save_path)
+            
+            # Extract text
+            extracted_text = extract_text_from_pdf(save_path)
+            
+            # Determine which dataset to update
+            if "MYTH" in extracted_text.upper() and "FACT" in extracted_text.upper():
+                myths_text = extracted_text
+                return jsonify({
+                    "response": "Myths database updated successfully",
+                    "type": "myths",
+                    "stats": {
+                        "characters": len(myths_text),
+                        "pages": extracted_text.count('\f') + 1
+                    }
+                })
+            else:
+                disease_text = extracted_text
+                disease_names = extract_disease_names(disease_text)
+                return jsonify({
+                    "response": "Disease dataset updated successfully",
+                    "type": "disease",
+                    "diseases": disease_names,
+                    "stats": {
+                        "characters": len(disease_text),
+                        "pages": extracted_text.count('\f') + 1
+                    }
+                })
+                
+        except Exception as e:
+            return jsonify({"response": f"Error processing file: {str(e)}"})
+    else:
+        return jsonify({"response": "Only PDF files are supported"})
+
+if __name__ == '__main__':
+    try:
+        # Create uploads directory if it doesn't exist
+        if not os.path.exists(UPLOAD_FOLDER):
+            os.makedirs(UPLOAD_FOLDER)
+            
+        app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
+    except Exception as e:
+        print(f"Failed to start server: {str(e)}")
